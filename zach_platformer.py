@@ -148,11 +148,12 @@ def generate_kill_announcement_sound(kill_count):
 class Zach(pygame.sprite.Sprite):
     def __init__(self):
         super().__init__()
-        self.height = 1  # Start with 1 pixel height
-        self.max_height = 40  # Maximum height Zach can grow to
+        self.blocks = 2  # Start with 2 blocks (2 lives)
+        self.block_height = 20  # Height of each block
+        self.max_blocks = 3  # Maximum number of blocks Zach can grow to
         self.update_sprite()
         self.rect.x = 100
-        self.rect.y = SCREEN_HEIGHT - 100
+        self.rect.y = SCREEN_HEIGHT - 100  # Position on ground like spiders
         self.vel_y = 0
         self.on_ground = False
         self.speed = 5
@@ -161,23 +162,26 @@ class Zach(pygame.sprite.Sprite):
         self.invincible_duration = 3 * FPS  # 3 seconds at 60 FPS
     
     def update_sprite(self):
-        """Update Zach's sprite based on current height"""
-        self.image = pygame.Surface((30, self.height))
+        """Update Zach's sprite based on current block count"""
+        total_height = self.blocks * self.block_height
+        self.image = pygame.Surface((30, total_height))
         self.image.fill(BLUE)
         self.rect = self.image.get_rect()
-        # Keep the bottom position the same when height changes
+        # Position Zach so his bottom is at ground level
         self.rect.bottom = SCREEN_HEIGHT - 100
+        # Also update the y position to match
+        self.rect.y = SCREEN_HEIGHT - 100 - total_height
     
     def add_life(self):
-        """Add a life by increasing height by 1 pixel"""
-        if self.height < self.max_height:
-            self.height += 1
+        """Add a life by increasing blocks by 1"""
+        if self.blocks < self.max_blocks:
+            self.blocks += 1
             self.update_sprite()
     
     def lose_life(self):
-        """Lose a life by decreasing height by 1 pixel"""
-        if self.height > 1:
-            self.height -= 1
+        """Lose a life by decreasing blocks by 1"""
+        if self.blocks > 1:  # Minimum of 1 block
+            self.blocks -= 1
             self.update_sprite()
             return True  # Still alive
         else:
@@ -411,8 +415,7 @@ class Game:
         level_text = self.small_font.render(f"Level: {self.level}", True, BLACK)
         self.screen.blit(level_text, (10, 50))
         
-        lives_text = self.small_font.render(f"Lives: {self.zach.height}", True, BLACK)
-        self.screen.blit(lives_text, (10, 90))
+
         
         if self.game_over:
             lose_text = self.font.render("GAME OVER", True, RED)
