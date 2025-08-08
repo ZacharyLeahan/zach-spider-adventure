@@ -1,3 +1,5 @@
+# Scoring + HUD + optional popups + high score
+
 import pygame
 import sys
 import random
@@ -36,6 +38,12 @@ BROWN = (139, 69, 19)
 FPS = 60
 GRAVITY = 0.8
 JUMP_SPEED = -15
+
+# Scoring system constants
+BASE_POINTS = 100                   # points per spider
+CONSEC_BONUS_PER = 0.10             # +10% per consecutive-air kill beyond the first
+MULTIKILL_MULTS = {1:1.0, 2:1.5, 3:2.0, 4:3.0}  # 4+ uses 3.0
+COMBO_TIMEOUT_FRAMES = None         # set to an int (e.g., 90) to enable time-based combo reset; None to disable
 
 def generate_kill_sound(pitch_multiplier=1.0):
     """Generate a simple beep sound with variable pitch"""
@@ -146,6 +154,22 @@ def generate_kill_announcement_sound(kill_count):
     arr = (arr * 32767).astype(np.int16)
     sound = pygame.sndarray.make_sound(arr)
     return sound
+
+def load_high_score():
+    """Load high score from file, return 0 if file doesn't exist"""
+    try:
+        with open('highscore.txt', 'r') as f:
+            return int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return 0
+
+def save_high_score(score):
+    """Save high score to file"""
+    try:
+        with open('highscore.txt', 'w') as f:
+            f.write(str(score))
+    except:
+        pass  # Fail silently if can't write file
 
 class Zach(pygame.sprite.Sprite):
     def __init__(self):
@@ -313,10 +337,22 @@ class Game:
         self.small_font = pygame.font.Font(None, 36)
         self.level = 1
         
+        # Scoring system state
+        self.score = 0
+        self.best_combo = 0
+        self.high_score = load_high_score()
+        self.combo_timer = 0
+        self.floating_texts = []  # List of floating text popups
+        
         self.reset_game()
 
     def reset_game(self):
         self.level = 1
+        # Reset scoring state but preserve high score
+        self.score = 0
+        self.best_combo = 0
+        self.combo_timer = 0
+        self.floating_texts = []
         self.setup_level()
 
     def setup_level(self):
@@ -417,6 +453,10 @@ class Game:
                     # Zach is dead (height reached 1 and lost another life)
                     if gameover_sound:
                         gameover_sound.play()
+                    # Save high score on game over
+                    if self.score > self.high_score:
+                        self.high_score = self.score
+                        save_high_score(self.high_score)
                     self.zach_alive = False
                     self.zach.kill()
                     self.game_over = True
@@ -428,12 +468,44 @@ class Game:
             # Kill all spiders Zach jumped on
             spiders_killed_count = len(spiders_to_kill)
             
+            # Calculate average position for floating text popup
+            avg_x = sum(spider.rect.centerx for spider in spiders_to_kill) // len(spiders_to_kill)
+            avg_y = sum(spider.rect.centery for spider in spiders_to_kill) // len(spiders_to_kill)
+            
             for spider in spiders_to_kill:
                 spider.kill()
                 self.spiders_defeated += 1
             
-            # Update consecutive kills counter
+            # Calculate points awarded (using consecutive kills BEFORE this kill)
+            consec_mult = 1.0 + CONSEC_BONUS_PER * max(0, self.zach.consecutive_kills)
+            
+            # Update consecutive kills counter AFTER calculating multiplier
             self.zach.consecutive_kills += spiders_killed_count
+            multikey = min(spiders_killed_count, 4)
+            multikill_mult = MULTIKILL_MULTS.get(multikey, MULTIKILL_MULTS[4])
+            gained = int(BASE_POINTS * spiders_killed_count * consec_mult * multikill_mult)
+            
+            # Award points
+            self.score += gained
+            self.best_combo = max(self.best_combo, self.zach.consecutive_kills)
+            
+            # Update high score and save if needed
+            if self.score > self.high_score:
+                self.high_score = self.score
+                save_high_score(self.high_score)
+            
+            # Reset combo timer if enabled
+            if COMBO_TIMEOUT_FRAMES is not None:
+                self.combo_timer = COMBO_TIMEOUT_FRAMES
+            
+            # Add floating text popup
+            self.floating_texts.append({
+                'text': f'+{gained}',
+                'x': avg_x,
+                'y': avg_y,
+                'vy': -1.0,
+                'ttl': 30
+            })
             
             # Play kill sounds based on number of spiders killed at once
             if spiders_killed_count == 2 and double_kill_sound:
@@ -448,6 +520,11 @@ class Game:
                 kill_sound = generate_kill_sound(pitch_multiplier)
                 kill_sound.play()
             
+            # Play bonus sound for big multikill scoring
+            if gained >= BASE_POINTS * 3:
+                bonus_sound = generate_kill_sound(1.5)  # Higher pitch bonus beep
+                bonus_sound.play()
+            
             # Bounce height scales with number of spiders killed
             self.zach.vel_y = (JUMP_SPEED // 2) * spiders_killed_count
             
@@ -455,6 +532,21 @@ class Game:
                 # Add a life when completing a level
                 self.zach.add_life()
                 self.next_level()
+
+    def update_scoring(self):
+        """Update scoring-related systems like combo timeout and floating text"""
+        # Handle combo timeout
+        if COMBO_TIMEOUT_FRAMES is not None and self.combo_timer > 0:
+            self.combo_timer -= 1
+            if self.combo_timer <= 0 and self.zach.consecutive_kills > 0:
+                self.zach.consecutive_kills = 0  # Reset combo on timeout
+        
+        # Update floating text popups
+        for text in self.floating_texts[:]:  # Use slice to avoid modifying list while iterating
+            text['y'] += text['vy']
+            text['ttl'] -= 1
+            if text['ttl'] <= 0:
+                self.floating_texts.remove(text)
 
     def draw(self):
         self.screen.fill(WHITE)
@@ -475,11 +567,43 @@ class Game:
             else:
                 self.screen.blit(self.zach.image, self.zach.rect)
         
+        # Left side HUD (existing)
         score_text = self.small_font.render(f"Spiders defeated: {self.spiders_defeated}/10", True, BLACK)
         self.screen.blit(score_text, (10, 10))
         
         level_text = self.small_font.render(f"Level: {self.level}", True, BLACK)
         self.screen.blit(level_text, (10, 50))
+        
+        # Right side HUD (new scoring system)
+        score_display = self.small_font.render(f"Score: {self.score}", True, BLACK)
+        score_rect = score_display.get_rect()
+        score_rect.topright = (SCREEN_WIDTH - 10, 10)
+        self.screen.blit(score_display, score_rect)
+        
+        high_score_display = self.small_font.render(f"High Score: {self.high_score}", True, BLACK)
+        high_score_rect = high_score_display.get_rect()
+        high_score_rect.topright = (SCREEN_WIDTH - 10, 50)
+        self.screen.blit(high_score_display, high_score_rect)
+        
+        best_combo_display = self.small_font.render(f"Best Combo: {self.best_combo}", True, BLACK)
+        best_combo_rect = best_combo_display.get_rect()
+        best_combo_rect.topright = (SCREEN_WIDTH - 10, 90)
+        self.screen.blit(best_combo_display, best_combo_rect)
+        
+        # Show current combo multiplier if active
+        if self.zach.consecutive_kills > 0:
+            consec_mult = 1.0 + CONSEC_BONUS_PER * max(0, self.zach.consecutive_kills - 1)
+            combo_display = self.small_font.render(f"Combo x{consec_mult:.2f}", True, GREEN)
+            combo_rect = combo_display.get_rect()
+            combo_rect.topright = (SCREEN_WIDTH - 10, 130)
+            self.screen.blit(combo_display, combo_rect)
+        
+        # Draw floating text popups
+        for text in self.floating_texts:
+            alpha = int(255 * (text['ttl'] / 30.0))  # Fade based on time to live
+            color = (min(255, 100 + alpha), min(255, 50 + alpha), 0)  # Yellow/orange color
+            text_surface = self.small_font.render(text['text'], True, color)
+            self.screen.blit(text_surface, (text['x'] - text_surface.get_width()//2, int(text['y'])))
         
 
         
@@ -512,6 +636,8 @@ class Game:
                         sprite.update()
                 # Update Zach separately
                 self.zach.update()
+                # Update scoring systems
+                self.update_scoring()
                 self.handle_collisions()
             
             self.draw()
