@@ -21,6 +21,8 @@ double_kill_sound = load_sound('doublekill.mp3')
 triple_kill_sound = load_sound('triplekills.mp3')
 monster_kill_sound = load_sound('monsterkill.mp3')
 crowd_gasp_sound = load_sound('crowd gasp.mp3')
+ouch_sound = load_sound('ouch.mp3')
+gameover_sound = load_sound('gameover.mp3')
 
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
@@ -153,24 +155,40 @@ class Zach(pygame.sprite.Sprite):
         self.max_blocks = 3  # Maximum number of blocks Zach can grow to
         self.update_sprite()
         self.rect.x = 100
-        self.rect.y = SCREEN_HEIGHT - 100  # Position on ground like spiders
+        self.rect.bottom = SCREEN_HEIGHT - 60  # Position on ground like spiders
         self.vel_y = 0
         self.on_ground = False
         self.speed = 5
         self.consecutive_kills = 0
         self.invincible_timer = 0
         self.invincible_duration = 3 * FPS  # 3 seconds at 60 FPS
+        self.just_lost_life = False  # Flag to prevent physics override after losing life
+        self.ground_lock_timer = 0  # Timer to keep Zach locked to ground
+        self.force_ground_position = None  # Force position override
     
     def update_sprite(self):
         """Update Zach's sprite based on current block count"""
+        # Store current position before updating sprite
+        old_bottom = getattr(self.rect, 'bottom', None) if hasattr(self, 'rect') else None
+        
         total_height = self.blocks * self.block_height
         self.image = pygame.Surface((30, total_height))
         self.image.fill(BLUE)
-        self.rect = self.image.get_rect()
-        # Position Zach so his bottom is at ground level
-        self.rect.bottom = SCREEN_HEIGHT - 100
-        # Also update the y position to match
-        self.rect.y = SCREEN_HEIGHT - 100 - total_height
+        
+        # Create new rect but preserve position if we had one
+        new_rect = self.image.get_rect()
+        if old_bottom is not None:
+            # Maintain the same bottom position (ground level)
+            new_rect.bottom = old_bottom
+            new_rect.x = self.rect.x  # Also preserve x position
+        else:
+            # Initial setup - position on ground
+            new_rect.bottom = SCREEN_HEIGHT - 60
+            new_rect.x = 100
+        
+        self.rect = new_rect
+        # Store the ground position for reference
+        self.ground_y = SCREEN_HEIGHT - 60
     
     def add_life(self):
         """Add a life by increasing blocks by 1"""
@@ -183,6 +201,8 @@ class Zach(pygame.sprite.Sprite):
         if self.blocks > 1:  # Minimum of 1 block
             self.blocks -= 1
             self.update_sprite()
+            # Force Zach to be on the ground after losing a life
+            self.reset_to_ground()
             return True  # Still alive
         else:
             return False  # Dead
@@ -191,6 +211,33 @@ class Zach(pygame.sprite.Sprite):
         # Update invincibility timer
         if self.invincible_timer > 0:
             self.invincible_timer -= 1
+        
+        # Update ground lock timer
+        if self.ground_lock_timer > 0:
+            self.ground_lock_timer -= 1
+            # Force Zach to stay on ground while timer is active
+            self.rect.bottom = SCREEN_HEIGHT - 60
+            self.vel_y = 0
+            self.on_ground = True
+            # Allow horizontal movement even when locked to ground
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+                self.rect.x -= self.speed
+            if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+                self.rect.x += self.speed
+            return  # Skip vertical physics while locked to ground
+        else:
+            # Clear forced position when timer expires
+            self.force_ground_position = None
+        
+        # Reset the just_lost_life flag after one frame
+        if self.just_lost_life:
+            self.just_lost_life = False
+            # Force Zach to stay on ground for one more frame
+            self.rect.bottom = SCREEN_HEIGHT - 60
+            self.vel_y = 0
+            self.on_ground = True
+            return  # Skip physics update for one frame after losing life
         
         keys = pygame.key.get_pressed()
         
@@ -205,8 +252,8 @@ class Zach(pygame.sprite.Sprite):
         self.vel_y += GRAVITY
         self.rect.y += self.vel_y
 
-        if self.rect.y >= SCREEN_HEIGHT - 100:
-            self.rect.y = SCREEN_HEIGHT - 100
+        if self.rect.bottom >= SCREEN_HEIGHT - 60:
+            self.rect.bottom = SCREEN_HEIGHT - 60
             self.vel_y = 0
             if not self.on_ground:  # Just landed
                 self.consecutive_kills = 0  # Reset combo when landing
@@ -222,6 +269,15 @@ class Zach(pygame.sprite.Sprite):
     
     def start_invincibility(self):
         self.invincible_timer = self.invincible_duration
+    
+    def reset_to_ground(self):
+        """Force Zach to be on the ground"""
+        # Simply position Zach on the ground
+        self.rect.bottom = SCREEN_HEIGHT - 60
+        self.vel_y = 0
+        self.on_ground = True
+        self.just_lost_life = True  # Set flag to prevent physics override
+        self.ground_lock_timer = 15  # Lock to ground for 15 frames (quarter second)
 
 class Spider(pygame.sprite.Sprite):
     def __init__(self, x, y, level=1):
@@ -303,6 +359,10 @@ class Game:
     def handle_collisions(self):
         if not self.zach_alive:
             return
+        
+        # Skip collision detection if Zach is locked to ground (just lost life)
+        if self.zach.ground_lock_timer > 0:
+            return
             
         collisions = pygame.sprite.spritecollide(self.zach, self.spiders, False)
         
@@ -348,9 +408,15 @@ class Game:
         
         if zach_takes_damage:
             if not self.zach.is_invincible():
+                # Play ouch sound when Zach gets hurt
+                if ouch_sound:
+                    ouch_sound.play()
+                
                 # Zach loses a life from side collision
                 if not self.zach.lose_life():
                     # Zach is dead (height reached 1 and lost another life)
+                    if gameover_sound:
+                        gameover_sound.play()
                     self.zach_alive = False
                     self.zach.kill()
                     self.game_over = True
@@ -440,7 +506,12 @@ class Game:
                         self.reset_game()
             
             if not self.game_over:
-                self.all_sprites.update()
+                # Update spiders separately from Zach to avoid interference
+                for sprite in self.all_sprites:
+                    if sprite != self.zach:
+                        sprite.update()
+                # Update Zach separately
+                self.zach.update()
                 self.handle_collisions()
             
             self.draw()
