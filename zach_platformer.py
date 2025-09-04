@@ -1,10 +1,10 @@
 # Scoring + HUD + optional popups + high score
 
 import pygame
-import sys
 import random
 import numpy as np
 import os
+import time
 
 pygame.init()
 pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
@@ -22,9 +22,15 @@ def load_sound(filename):
 double_kill_sound = load_sound('doublekill.mp3')
 triple_kill_sound = load_sound('triplekills.mp3')
 monster_kill_sound = load_sound('monsterkill.mp3')
-crowd_gasp_sound = load_sound('crowd gasp.mp3')
 ouch_sound = load_sound('ouch.mp3')
 gameover_sound = load_sound('gameover.mp3')
+
+# Load level and win sounds
+win_sound = load_sound('youwin.mp3')  # Use youwin.mp3 for victory
+
+# Function to load level sound dynamically
+def load_level_sound(level_num):
+    return load_sound(f'level{level_num}.mp3')
 
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
@@ -37,7 +43,7 @@ BROWN = (139, 69, 19)
 
 FPS = 60
 GRAVITY = 0.8
-JUMP_SPEED = -15
+JUMP_SPEED = -18
 
 # Scoring system constants
 BASE_POINTS = 100                   # points per spider
@@ -89,71 +95,6 @@ def generate_multi_kill_sound(kill_count):
     sound = pygame.sndarray.make_sound(arr)
     return sound
 
-def generate_kill_announcement_sound(kill_count):
-    """Generate voice-like announcement sounds for multi-kills"""
-    sample_rate = 22050
-    
-    if kill_count == 2:  # "Double Kill"
-        # Create a two-tone voice-like sound
-        duration = 0.6
-        frames = int(duration * sample_rate)
-        arr = np.zeros((frames, 2))
-        
-        for i in range(frames):
-            # First part: "Dou-" (lower pitch)
-            if i < frames // 2:
-                freq = 150 + 50 * np.sin(2 * np.pi * 3 * i / sample_rate)
-                envelope = 0.5 * (1 - i / (frames // 2)) ** 0.3
-            else:  # Second part: "-ble" (higher pitch)
-                freq = 200 + 30 * np.sin(2 * np.pi * 4 * i / sample_rate)
-                envelope = 0.5 * (1 - (i - frames // 2) / (frames // 2)) ** 0.3
-            
-            wave = np.sin(2 * np.pi * freq * i / sample_rate)
-            arr[i] = [wave * envelope, wave * envelope]
-    
-    elif kill_count == 3:  # "Triple Kill"
-        # Create a three-tone ascending sound
-        duration = 0.7
-        frames = int(duration * sample_rate)
-        arr = np.zeros((frames, 2))
-        
-        third = frames // 3
-        for i in range(frames):
-            if i < third:  # "Tri-"
-                freq = 140 + 20 * np.sin(2 * np.pi * 2 * i / sample_rate)
-                envelope = 0.6
-            elif i < 2 * third:  # "-ple"
-                freq = 180 + 25 * np.sin(2 * np.pi * 3 * i / sample_rate)
-                envelope = 0.6
-            else:  # "Kill"
-                freq = 220 + 30 * np.sin(2 * np.pi * 5 * i / sample_rate)
-                envelope = 0.6 * (1 - (i - 2 * third) / third) ** 0.3
-            
-            wave = np.sin(2 * np.pi * freq * i / sample_rate)
-            arr[i] = [wave * envelope, wave * envelope]
-    
-    else:  # 4+ kills: "Monster Kill"
-        # Create a deep, powerful roar-like sound
-        duration = 0.8
-        frames = int(duration * sample_rate)
-        arr = np.zeros((frames, 2))
-        
-        for i in range(frames):
-            # Deep growling sound with multiple harmonics
-            freq1 = 80 + 40 * np.sin(2 * np.pi * 1.5 * i / sample_rate)
-            freq2 = 120 + 30 * np.sin(2 * np.pi * 2.2 * i / sample_rate)
-            freq3 = 160 + 20 * np.sin(2 * np.pi * 3.1 * i / sample_rate)
-            
-            wave = (np.sin(2 * np.pi * freq1 * i / sample_rate) * 0.5 +
-                   np.sin(2 * np.pi * freq2 * i / sample_rate) * 0.3 +
-                   np.sin(2 * np.pi * freq3 * i / sample_rate) * 0.2)
-            
-            envelope = 0.7 * max(0, 1 - (i / frames) ** 0.5)
-            arr[i] = [wave * envelope, wave * envelope]
-    
-    arr = (arr * 32767).astype(np.int16)
-    sound = pygame.sndarray.make_sound(arr)
-    return sound
 
 def load_high_score():
     """Load high score from file, return 0 if file doesn't exist"""
@@ -188,7 +129,6 @@ class Zach(pygame.sprite.Sprite):
         self.invincible_duration = 3 * FPS  # 3 seconds at 60 FPS
         self.just_lost_life = False  # Flag to prevent physics override after losing life
         self.ground_lock_timer = 0  # Timer to keep Zach locked to ground
-        self.force_ground_position = None  # Force position override
     
     def update_sprite(self):
         """Update Zach's sprite based on current block count"""
@@ -240,9 +180,7 @@ class Zach(pygame.sprite.Sprite):
         if self.ground_lock_timer > 0:
             self.ground_lock_timer -= 1
             # Force Zach to stay on ground while timer is active
-            self.rect.bottom = SCREEN_HEIGHT - 60
-            self.vel_y = 0
-            self.on_ground = True
+            self._set_ground_position()
             # Allow horizontal movement even when locked to ground
             keys = pygame.key.get_pressed()
             if keys[pygame.K_LEFT] or keys[pygame.K_a]:
@@ -250,17 +188,12 @@ class Zach(pygame.sprite.Sprite):
             if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
                 self.rect.x += self.speed
             return  # Skip vertical physics while locked to ground
-        else:
-            # Clear forced position when timer expires
-            self.force_ground_position = None
         
         # Reset the just_lost_life flag after one frame
         if self.just_lost_life:
             self.just_lost_life = False
             # Force Zach to stay on ground for one more frame
-            self.rect.bottom = SCREEN_HEIGHT - 60
-            self.vel_y = 0
-            self.on_ground = True
+            self._set_ground_position()
             return  # Skip physics update for one frame after losing life
         
         keys = pygame.key.get_pressed()
@@ -296,12 +229,15 @@ class Zach(pygame.sprite.Sprite):
     
     def reset_to_ground(self):
         """Force Zach to be on the ground"""
-        # Simply position Zach on the ground
+        self._set_ground_position()
+        self.just_lost_life = True  # Set flag to prevent physics override
+        self.ground_lock_timer = 15  # Lock to ground for 15 frames (quarter second)
+    
+    def _set_ground_position(self):
+        """Set Zach to ground position with proper physics state"""
         self.rect.bottom = SCREEN_HEIGHT - 60
         self.vel_y = 0
         self.on_ground = True
-        self.just_lost_life = True  # Set flag to prevent physics override
-        self.ground_lock_timer = 15  # Lock to ground for 15 frames (quarter second)
 
 class Spider(pygame.sprite.Sprite):
     def __init__(self, x, y, level=1):
@@ -344,6 +280,18 @@ class Game:
         self.combo_timer = 0
         self.floating_texts = []  # List of floating text popups
         
+        # Track spiders defeated across all levels
+        self.total_spiders_defeated = 0
+        
+        # Level transition state
+        self.level_transition = False
+        self.level_transition_start = 0
+        self.level_transition_duration = 1.5  # seconds
+        self.level_sound_played = False  # Track if level start sound has been played
+        
+        # Game completion state
+        self.game_won = False
+        
         self.reset_game()
 
     def reset_game(self):
@@ -353,7 +301,18 @@ class Game:
         self.best_combo = 0
         self.combo_timer = 0
         self.floating_texts = []
+        # Reset total spiders defeated when starting a new game
+        self.total_spiders_defeated = 0
+        # Reset level transition state
+        self.level_transition = False
+        self.level_sound_played = False
+        # Reset game completion state
+        self.game_won = False
         self.setup_level()
+        # Play level start sound for level 1
+        level_sound = load_level_sound(self.level)
+        if level_sound:
+            level_sound.play()
 
     def setup_level(self):
         self.zach = Zach()
@@ -390,7 +349,25 @@ class Game:
 
     def next_level(self):
         self.level += 1
-        self.setup_level()
+        # Start level transition
+        self.level_transition = True
+        self.level_transition_start = time.time()
+        self.level_sound_played = False  # Reset sound flag for new level
+    
+    def check_level_transition(self):
+        """Check if level transition is complete and setup new level if needed"""
+        if self.level_transition:
+            # Play level start sound if not already played
+            if not self.level_sound_played:
+                level_sound = load_level_sound(self.level)
+                if level_sound:
+                    level_sound.play()
+                self.level_sound_played = True
+            
+            elapsed = time.time() - self.level_transition_start
+            if elapsed >= self.level_transition_duration:
+                self.level_transition = False
+                self.setup_level()
 
     def handle_collisions(self):
         if not self.zach_alive:
@@ -401,26 +378,6 @@ class Game:
             return
             
         collisions = pygame.sprite.spritecollide(self.zach, self.spiders, False)
-        
-        # Check for near-miss situations (Zach very close to spiders but not colliding)
-        near_miss_threshold = 25  # pixels - increased from 15
-        near_miss_detected = False
-        
-        for spider in self.spiders:
-            # Calculate distance between Zach and spider
-            zach_center = (self.zach.rect.centerx, self.zach.rect.centery)
-            spider_center = (spider.rect.centerx, spider.rect.centery)
-            distance = ((zach_center[0] - spider_center[0])**2 + (zach_center[1] - spider_center[1])**2)**0.5
-            
-            # If very close but not colliding, it's a near miss
-            if distance < near_miss_threshold and distance > 3:  # Close but not touching (reduced minimum distance)
-                near_miss_detected = True
-                break
-        
-        # Play gasp sound for near misses (with some randomness to avoid spam)
-        # Only play gasp when Zach is NOT invincible
-        if near_miss_detected and crowd_gasp_sound and not self.zach.is_invincible() and random.random() < 0.3:  # 30% chance per frame (increased from 10%)
-            crowd_gasp_sound.play()
         
         if not collisions:
             return
@@ -475,6 +432,7 @@ class Game:
             for spider in spiders_to_kill:
                 spider.kill()
                 self.spiders_defeated += 1
+                self.total_spiders_defeated += 1
             
             # Calculate points awarded (using consecutive kills BEFORE this kill)
             consec_mult = 1.0 + CONSEC_BONUS_PER * max(0, self.zach.consecutive_kills)
@@ -483,10 +441,14 @@ class Game:
             self.zach.consecutive_kills += spiders_killed_count
             multikey = min(spiders_killed_count, 4)
             multikill_mult = MULTIKILL_MULTS.get(multikey, MULTIKILL_MULTS[4])
-            gained = int(BASE_POINTS * spiders_killed_count * consec_mult * multikill_mult)
+            
+            # Calculate base and total points
+            base_points = BASE_POINTS * spiders_killed_count
+            total_points = int(base_points * consec_mult * multikill_mult)
+            bonus_points = total_points - base_points
             
             # Award points
-            self.score += gained
+            self.score += total_points
             self.best_combo = max(self.best_combo, self.zach.consecutive_kills)
             
             # Update high score and save if needed
@@ -498,16 +460,17 @@ class Game:
             if COMBO_TIMEOUT_FRAMES is not None:
                 self.combo_timer = COMBO_TIMEOUT_FRAMES
             
-            # Add floating text popup
-            self.floating_texts.append({
-                'text': f'+{gained}',
-                'x': avg_x,
-                'y': avg_y,
-                'vy': -1.0,
-                'ttl': 30
-            })
+            # Add floating text popup only for bonus points
+            if bonus_points > 0:
+                self.floating_texts.append({
+                    'text': f'+{bonus_points}',
+                    'x': avg_x,
+                    'y': avg_y,
+                    'vy': -1.0,
+                    'ttl': 30
+                })
             
-            # Play kill sounds based on number of spiders killed at once
+            # Play appropriate kill sound
             if spiders_killed_count == 2 and double_kill_sound:
                 double_kill_sound.play()
             elif spiders_killed_count == 3 and triple_kill_sound:
@@ -515,23 +478,34 @@ class Game:
             elif spiders_killed_count >= 4 and monster_kill_sound:
                 monster_kill_sound.play()
             else:
-                # Fallback to generated sound for single kills or if sound files aren't loaded
-                pitch_multiplier = 1.0 + (self.zach.consecutive_kills - 1) * 0.2
-                kill_sound = generate_kill_sound(pitch_multiplier)
-                kill_sound.play()
+                # Single kill or fallback sound
+                pitch = 1.0 + (self.zach.consecutive_kills - 1) * 0.2
+                generate_kill_sound(pitch).play()
             
             # Play bonus sound for big multikill scoring
-            if gained >= BASE_POINTS * 3:
-                bonus_sound = generate_kill_sound(1.5)  # Higher pitch bonus beep
-                bonus_sound.play()
+            if total_points >= BASE_POINTS * 3:
+                generate_kill_sound(1.5).play()
             
             # Bounce height scales with number of spiders killed
             self.zach.vel_y = (JUMP_SPEED // 2) * spiders_killed_count
             
             if self.spiders_defeated >= 10:
-                # Add a life when completing a level
-                self.zach.add_life()
-                self.next_level()
+                # Check if this is the final level (level 10)
+                if self.level >= 10:
+                    # Player has won the game!
+                    self.game_won = True
+                    self.game_over = True
+                    # Play win sound
+                    if win_sound:
+                        win_sound.play()
+                    # Save high score on game completion
+                    if self.score > self.high_score:
+                        self.high_score = self.score
+                        save_high_score(self.high_score)
+                else:
+                    # Add a life when completing a level
+                    self.zach.add_life()
+                    self.next_level()
 
     def update_scoring(self):
         """Update scoring-related systems like combo timeout and floating text"""
@@ -568,7 +542,7 @@ class Game:
                 self.screen.blit(self.zach.image, self.zach.rect)
         
         # Left side HUD (existing)
-        score_text = self.small_font.render(f"Spiders defeated: {self.spiders_defeated}/10", True, BLACK)
+        score_text = self.small_font.render(f"Spiders defeated: {self.total_spiders_defeated}", True, BLACK)
         self.screen.blit(score_text, (10, 10))
         
         level_text = self.small_font.render(f"Level: {self.level}", True, BLACK)
@@ -600,21 +574,49 @@ class Game:
         
         # Draw floating text popups
         for text in self.floating_texts:
-            alpha = int(255 * (text['ttl'] / 30.0))  # Fade based on time to live
-            color = (min(255, 100 + alpha), min(255, 50 + alpha), 0)  # Yellow/orange color
+            fade = text['ttl'] / 30.0
+            alpha = int(255 * fade)
+            color = (min(255, 100 + alpha), min(255, 50 + alpha), 0)
             text_surface = self.small_font.render(text['text'], True, color)
-            self.screen.blit(text_surface, (text['x'] - text_surface.get_width()//2, int(text['y'])))
+            x = text['x'] - text_surface.get_width() // 2
+            self.screen.blit(text_surface, (x, int(text['y'])))
         
-
-        
-        if self.game_over:
-            lose_text = self.font.render("GAME OVER", True, RED)
-            text_rect = lose_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 50))
-            self.screen.blit(lose_text, text_rect)
+        if self.level_transition:
+            # Draw level transition screen
+            level_text = self.font.render(f"Level {self.level}", True, BLUE)
+            text_rect = level_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2))
+            self.screen.blit(level_text, text_rect)
             
-            restart_text = self.small_font.render("Press 'R' to restart", True, BLACK)
-            text_rect = restart_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 50))
-            self.screen.blit(restart_text, text_rect)
+            # Show countdown or progress
+            elapsed = time.time() - self.level_transition_start
+            remaining = max(0, self.level_transition_duration - elapsed)
+            countdown_text = self.small_font.render(f"Starting in {remaining:.1f}s", True, BLACK)
+            countdown_rect = countdown_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 80))
+            self.screen.blit(countdown_text, countdown_rect)
+        elif self.game_over:
+            if self.game_won:
+                # Show win screen
+                win_text = self.font.render("YOU WIN!", True, GREEN)
+                text_rect = win_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 50))
+                self.screen.blit(win_text, text_rect)
+                
+                # Show final stats
+                stats_text = self.small_font.render(f"Final Score: {self.score} | Total Spiders: {self.total_spiders_defeated}", True, BLACK)
+                stats_rect = stats_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 10))
+                self.screen.blit(stats_text, stats_rect)
+                
+                restart_text = self.small_font.render("Press 'R' to restart", True, BLACK)
+                text_rect = restart_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 50))
+                self.screen.blit(restart_text, text_rect)
+            else:
+                # Show game over screen
+                lose_text = self.font.render("GAME OVER", True, RED)
+                text_rect = lose_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 50))
+                self.screen.blit(lose_text, text_rect)
+                
+                restart_text = self.small_font.render("Press 'R' to restart", True, BLACK)
+                text_rect = restart_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 50))
+                self.screen.blit(restart_text, text_rect)
         
         pygame.display.flip()
 
@@ -630,21 +632,25 @@ class Game:
                         self.reset_game()
             
             if not self.game_over:
-                # Update spiders separately from Zach to avoid interference
-                for sprite in self.all_sprites:
-                    if sprite != self.zach:
-                        sprite.update()
-                # Update Zach separately
-                self.zach.update()
-                # Update scoring systems
-                self.update_scoring()
-                self.handle_collisions()
+                # Check for level transition completion
+                self.check_level_transition()
+                
+                # Only update game if not in level transition
+                if not self.level_transition:
+                    # Update spiders separately from Zach to avoid interference
+                    for sprite in self.all_sprites:
+                        if sprite != self.zach:
+                            sprite.update()
+                    # Update Zach separately
+                    self.zach.update()
+                    # Update scoring systems
+                    self.update_scoring()
+                    self.handle_collisions()
             
             self.draw()
             self.clock.tick(FPS)
         
         pygame.quit()
-        sys.exit()
 
 if __name__ == "__main__":
     game = Game()
