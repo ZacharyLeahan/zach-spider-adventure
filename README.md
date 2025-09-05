@@ -1,6 +1,8 @@
 # Zach's Spider Adventure
 
 A retro-style platformer game built with Python and Pygame.
+<img width="991" height="785" alt="image" src="https://github.com/user-attachments/assets/b76fd8da-0a19-4634-91d5-5214f730adab" />
+
 
 ## How to Play
 
