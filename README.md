@@ -2,6 +2,7 @@
 
 A retro-style platformer game built with Python and Pygame.
 <img width="991" height="785" alt="image" src="https://github.com/user-attachments/assets/b76fd8da-0a19-4634-91d5-5214f730adab" />
+<img width="991" height="776" alt="image" src="https://github.com/user-attachments/assets/bba209b8-4c08-4fa9-8433-e7f61f483d05" />
 
 
 ## How to Play
